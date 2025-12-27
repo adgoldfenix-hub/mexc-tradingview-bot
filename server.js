@@ -22,19 +22,18 @@ function sign(queryString) {
     .digest("hex");
 }
 
-// === Envoi d’un ordre Spot ===
+// === Envoi d’un ordre Spot normal (LIMIT ou MARKET) ===
 async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   const timestamp = Date.now();
   const params = {
     symbol,
-    side, // BUY ou SELL
-    type, // MARKET ou LIMIT
+    side,
+    type,
     quantity,
     timestamp,
   };
   if (type === "LIMIT" && price) params.price = price;
 
-  // Crée la query string triée
   const queryString = Object.entries(params)
     .map(([k, v]) => `${k}=${v}`)
     .join("&");
@@ -54,7 +53,6 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
       headers,
       timeout: 10000,
     });
-
     console.log("✅ Réponse MEXC Spot :", JSON.stringify(res.data, null, 2));
     return res.data;
   } catch (err) {
@@ -63,7 +61,65 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   }
 }
 
-// === Health Check pour Render (important pour éviter 502) ===
+// === Fermeture totale de la position au MARKET (pour éviter Oversold) ===
+async function closeAllPositions(symbol) {
+  try {
+    // Récupérer le solde disponible pour la base asset (ex: XRP pour XRPUSDT)
+    const baseAsset = symbol.replace("USDT", "");
+    const timestamp = Date.now();
+    const queryString = `timestamp=${timestamp}`;
+    const signature = sign(queryString);
+
+    const accountRes = await axios.get(`${BASE_URL}/api/v3/account?${queryString}&signature=${signature}`, {
+      headers: { "X-MEXC-APIKEY": API_KEY },
+      timeout: 10000,
+    });
+
+    const balances = accountRes.data.balances;
+    const baseBalance = balances.find(b => b.asset === baseAsset)?.free || "0";
+
+    const qtyToSell = parseFloat(baseBalance);
+    if (qtyToSell <= 0) {
+      throw new Error(`Aucun ${baseAsset} disponible à vendre`);
+    }
+
+    // Ordre MARKET SELL pour tout vendre
+    const params = {
+      symbol,
+      side: "SELL",
+      type: "MARKET",
+      quantity: qtyToSell.toFixed(4), // arrondi à 4 décimales (suffisant pour la plupart des cryptos)
+      timestamp: Date.now(),
+    };
+
+    const sellQuery = Object.entries(params)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("&");
+
+    const sellSignature = sign(sellQuery);
+    const sellFinalQuery = `${sellQuery}&signature=${sellSignature}`;
+
+    const headers = {
+      "X-MEXC-APIKEY": API_KEY,
+      "Content-Type": "application/json",
+    };
+
+    console.log(`📤 Fermeture totale MARKET SELL pour ${symbol}: quantity=${qtyToSell.toFixed(4)}`);
+
+    const res = await axios.post(`${BASE_URL}/api/v3/order?${sellFinalQuery}`, null, {
+      headers,
+      timeout: 10000,
+    });
+
+    console.log("✅ Fermeture totale réussie :", JSON.stringify(res.data, null, 2));
+    return res.data;
+  } catch (err) {
+    console.error("❌ Erreur fermeture totale :", err.response?.data || err.message);
+    throw new Error(err.response?.data?.msg || err.message);
+  }
+}
+
+// === Health Check pour Render ===
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", message: "Server is alive" });
 });
@@ -79,11 +135,19 @@ app.post("/webhook", async (req, res) => {
       .json({ status: "error", message: "symbol, side, type, quantity requis" });
   }
 
-  // Conversion en MAJUSCULES obligatoire pour MEXC
-  side = side.toUpperCase();  // 'buy' → 'BUY', 'sell' → 'SELL'
+  side = side.toUpperCase(); // 'buy' → 'BUY', 'sell' → 'SELL'
 
   try {
-    const result = await placeSpotOrder(symbol, side, type, quantity, price);
+    let result;
+
+    // Si c'est un SELL avec une quantité > 1 → c'est probablement un close → fermer tout au MARKET
+    if (side === "SELL" && parseFloat(quantity) > 1) {
+      result = await closeAllPositions(symbol);
+    } else {
+      // Ordre normal (BUY ou petit SELL)
+      result = await placeSpotOrder(symbol, side, type, quantity, price);
+    }
+
     res.json({ status: "ok", result });
   } catch (e) {
     res.status(500).json({ status: "error", message: e.message });
