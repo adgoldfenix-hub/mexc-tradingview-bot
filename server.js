@@ -22,7 +22,7 @@ function sign(queryString) {
     .digest("hex");
 }
 
-// === Envoi d’un ordre Spot normal (LIMIT ou MARKET) ===
+// === Envoi d’un ordre Spot normal ===
 async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   const timestamp = Date.now();
   const params = {
@@ -61,10 +61,10 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   }
 }
 
-// === Fermeture totale de la position au MARKET (pour éviter Oversold) ===
+// === Fermeture totale au MARKET avec précision correcte ===
 async function closeAllPositions(symbol) {
   try {
-    // Récupérer le solde disponible pour la base asset (ex: XRP pour XRPUSDT)
+    // Récupérer le solde disponible
     const baseAsset = symbol.replace("USDT", "");
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}`;
@@ -83,12 +83,15 @@ async function closeAllPositions(symbol) {
       throw new Error(`Aucun ${baseAsset} disponible à vendre`);
     }
 
-    // Ordre MARKET SELL pour tout vendre
+    // === IMPORTANT : Arrondi à 1 décimale pour XRPUSDT (précision = 1) ===
+    const qtyRounded = qtyToSell.toFixed(1);  // 50.4899 → 50.5
+
+    // Ordre MARKET SELL
     const params = {
       symbol,
       side: "SELL",
       type: "MARKET",
-      quantity: qtyToSell.toFixed(4), // arrondi à 4 décimales (suffisant pour la plupart des cryptos)
+      quantity: qtyRounded,
       timestamp: Date.now(),
     };
 
@@ -104,7 +107,7 @@ async function closeAllPositions(symbol) {
       "Content-Type": "application/json",
     };
 
-    console.log(`📤 Fermeture totale MARKET SELL pour ${symbol}: quantity=${qtyToSell.toFixed(4)}`);
+    console.log(`📤 Fermeture totale MARKET SELL pour ${symbol}: quantity=${qtyRounded} (solde original: ${qtyToSell})`);
 
     const res = await axios.post(`${BASE_URL}/api/v3/order?${sellFinalQuery}`, null, {
       headers,
@@ -119,7 +122,7 @@ async function closeAllPositions(symbol) {
   }
 }
 
-// === Health Check pour Render ===
+// === Health Check ===
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", message: "Server is alive" });
 });
@@ -135,16 +138,15 @@ app.post("/webhook", async (req, res) => {
       .json({ status: "error", message: "symbol, side, type, quantity requis" });
   }
 
-  side = side.toUpperCase(); // 'buy' → 'BUY', 'sell' → 'SELL'
+  side = side.toUpperCase();
 
   try {
     let result;
 
-    // Si c'est un SELL avec une quantité > 1 → c'est probablement un close → fermer tout au MARKET
+    // Détection close : SELL avec quantité > 1 → fermer tout au MARKET
     if (side === "SELL" && parseFloat(quantity) > 1) {
       result = await closeAllPositions(symbol);
     } else {
-      // Ordre normal (BUY ou petit SELL)
       result = await placeSpotOrder(symbol, side, type, quantity, price);
     }
 
