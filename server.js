@@ -71,13 +71,16 @@ app.get("/health", (req, res) => {
 // === Webhook TradingView ===
 app.post("/webhook", async (req, res) => {
   console.log("🚀 Signal reçu :", req.body);
-  const { symbol, side, type, quantity, price } = req.body;
+  let { symbol, side, type, quantity, price } = req.body;
 
   if (!symbol || !side || !type || !quantity) {
     return res
       .status(400)
       .json({ status: "error", message: "symbol, side, type, quantity requis" });
   }
+
+  // Conversion en MAJUSCULES obligatoire pour MEXC
+  side = side.toUpperCase();  // 'buy' → 'BUY', 'sell' → 'SELL'
 
   try {
     const result = await placeSpotOrder(symbol, side, type, quantity, price);
