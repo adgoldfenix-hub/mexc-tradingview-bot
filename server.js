@@ -25,7 +25,6 @@ function sign(queryString) {
 // === Envoi d’un ordre Spot ===
 async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   const timestamp = Date.now();
-
   const params = {
     symbol,
     side, // BUY ou SELL
@@ -33,7 +32,6 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
     quantity,
     timestamp,
   };
-
   if (type === "LIMIT" && price) params.price = price;
 
   // Crée la query string triée
@@ -60,13 +58,15 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
     console.log("✅ Réponse MEXC Spot :", JSON.stringify(res.data, null, 2));
     return res.data;
   } catch (err) {
-    console.error(
-      "❌ Erreur API MEXC Spot:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erreur API MEXC Spot:", err.response?.data || err.message);
     throw new Error(err.response?.data?.msg || err.message);
   }
 }
+
+// === Health Check pour Render (important pour éviter 502) ===
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", message: "Server is alive" });
+});
 
 // === Webhook TradingView ===
 app.post("/webhook", async (req, res) => {
@@ -89,6 +89,7 @@ app.post("/webhook", async (req, res) => {
 
 // === Serveur ===
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Serveur Spot MEXC prêt sur http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Serveur Spot MEXC prêt sur port ${PORT}`);
+  console.log(`Health check disponible : /health`);
 });
