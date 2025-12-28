@@ -61,10 +61,9 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   }
 }
 
-// === Fermeture totale au MARKET avec précision correcte ===
+// === Fermeture totale au MARKET avec vente de 99% ===
 async function closeAllPositions(symbol) {
   try {
-    // Récupérer le solde disponible
     const baseAsset = symbol.replace("USDT", "");
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}`;
@@ -77,14 +76,17 @@ async function closeAllPositions(symbol) {
 
     const balances = accountRes.data.balances;
     const baseBalance = balances.find(b => b.asset === baseAsset)?.free || "0";
-
-    const qtyToSell = parseFloat(baseBalance);
+    
+    // On prend 99% du solde
+    const qtyToSell = parseFloat(baseBalance) * 0.99;
+    
     if (qtyToSell <= 0) {
       throw new Error(`Aucun ${baseAsset} disponible à vendre`);
     }
 
-    // === IMPORTANT : Arrondi à 1 décimale pour XRPUSDT (précision = 1) ===
-    const qtyRounded = qtyToSell.toFixed(1);  // 50.4899 → 50.5
+    // Récupérer la précision
+    const precision = await getQuantityPrecision(symbol);
+    const qtyRounded = qtyToSell.toFixed(precision);  // Arrondir à la précision appropriée
 
     // Ordre MARKET SELL
     const params = {
@@ -107,7 +109,7 @@ async function closeAllPositions(symbol) {
       "Content-Type": "application/json",
     };
 
-    console.log(`📤 Fermeture totale MARKET SELL pour ${symbol}: quantity=${qtyRounded} (solde original: ${qtyToSell})`);
+    console.log(`📤 Fermeture totale MARKET SELL pour ${symbol}: quantity=${qtyRounded} (solde original: ${baseBalance})`);
 
     const res = await axios.post(`${BASE_URL}/api/v3/order?${sellFinalQuery}`, null, {
       headers,
@@ -121,6 +123,14 @@ async function closeAllPositions(symbol) {
     throw new Error(err.response?.data?.msg || err.message);
   }
 }
+
+// === Fonction pour récupérer la précision ===
+async function getQuantityPrecision(symbol) {
+  const res = await axios.get(`${BASE_URL}/api/v3/exchangeInfo?symbol=${symbol}`);
+  const filter = res.data.symbols[0].filters.find(f => f.filterType === "LOT_SIZE");
+  return parseInt(filter.stepSize.split('.')[1]?.length || 0); // ex: 1 pour XRP
+}
+
 
 // === Health Check ===
 app.get("/health", (req, res) => {
