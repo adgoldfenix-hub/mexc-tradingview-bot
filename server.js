@@ -22,7 +22,7 @@ function sign(queryString) {
     .digest("hex");
 }
 
-// === Envoi d’un ordre Spot normal ===
+// === Envoi d’un ordre Spot normal (LIMIT ou MARKET) ===
 async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   const timestamp = Date.now();
   const params = {
@@ -37,7 +37,6 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   const queryString = Object.entries(params)
     .map(([k, v]) => `${k}=${v}`)
     .join("&");
-
   const signature = sign(queryString);
   const finalQuery = `${queryString}&signature=${signature}`;
 
@@ -47,7 +46,6 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   };
 
   console.log("📤 Payload envoyé à MEXC Spot:", finalQuery);
-
   try {
     const res = await axios.post(`${BASE_URL}/api/v3/order?${finalQuery}`, null, {
       headers,
@@ -61,46 +59,49 @@ async function placeSpotOrder(symbol, side, type, quantity, price = null) {
   }
 }
 
-// === Fermeture totale au MARKET avec vente de 99% ===
+// === Fermeture totale au MARKET avec arrondi fixe pour XRPUSDT ===
 async function closeAllPositions(symbol) {
   try {
+    // Récupérer le solde disponible
     const baseAsset = symbol.replace("USDT", "");
     const timestamp = Date.now();
     const queryString = `timestamp=${timestamp}`;
     const signature = sign(queryString);
 
-    const accountRes = await axios.get(`${BASE_URL}/api/v3/account?${queryString}&signature=${signature}`, {
-      headers: { "X-MEXC-APIKEY": API_KEY },
-      timeout: 10000,
-    });
+    const accountRes = await axios.get(
+      `${BASE_URL}/api/v3/account?${queryString}&signature=${signature}`,
+      {
+        headers: { "X-MEXC-APIKEY": API_KEY },
+        timeout: 10000,
+      }
+    );
 
     const balances = accountRes.data.balances;
-    const baseBalance = balances.find(b => b.asset === baseAsset)?.free || "0";
-    
-    // On prend 99% du solde
-    const qtyToSell = parseFloat(baseBalance) * 0.99;
-    
+    const baseBalance = balances.find((b) => b.asset === baseAsset)?.free || "0";
+    let qtyToSell = parseFloat(baseBalance);
+
     if (qtyToSell <= 0) {
       throw new Error(`Aucun ${baseAsset} disponible à vendre`);
     }
 
-    // Récupérer la précision
-    const precision = await getQuantityPrecision(symbol);
-    const qtyRounded = qtyToSell.toFixed(precision);  // Arrondir à la précision appropriée
+    // Arrondi à 1 décimale pour XRPUSDT (précision requise par MEXC)
+    const qtyRounded = qtyToSell.toFixed(1); // ex: 50.4899 → "50.5"
+
+    // Conversion en nombre pour éviter les "0.0" en string qui pourraient poser problème
+    qtyToSell = parseFloat(qtyRounded);
 
     // Ordre MARKET SELL
     const params = {
       symbol,
       side: "SELL",
       type: "MARKET",
-      quantity: qtyRounded,
+      quantity: qtyRounded, // string avec 1 décimale
       timestamp: Date.now(),
     };
 
     const sellQuery = Object.entries(params)
       .map(([k, v]) => `${k}=${v}`)
       .join("&");
-
     const sellSignature = sign(sellQuery);
     const sellFinalQuery = `${sellQuery}&signature=${sellSignature}`;
 
@@ -109,13 +110,14 @@ async function closeAllPositions(symbol) {
       "Content-Type": "application/json",
     };
 
-    console.log(`📤 Fermeture totale MARKET SELL pour ${symbol}: quantity=${qtyRounded} (solde original: ${baseBalance})`);
+    console.log(
+      `📤 Fermeture totale MARKET SELL pour ${symbol}: quantity=${qtyRounded} (solde original: ${baseBalance})`
+    );
 
     const res = await axios.post(`${BASE_URL}/api/v3/order?${sellFinalQuery}`, null, {
       headers,
       timeout: 10000,
     });
-
     console.log("✅ Fermeture totale réussie :", JSON.stringify(res.data, null, 2));
     return res.data;
   } catch (err) {
@@ -123,14 +125,6 @@ async function closeAllPositions(symbol) {
     throw new Error(err.response?.data?.msg || err.message);
   }
 }
-
-// === Fonction pour récupérer la précision ===
-async function getQuantityPrecision(symbol) {
-  const res = await axios.get(`${BASE_URL}/api/v3/exchangeInfo?symbol=${symbol}`);
-  const filter = res.data.symbols[0].filters.find(f => f.filterType === "LOT_SIZE");
-  return parseInt(filter.stepSize.split('.')[1]?.length || 0); // ex: 1 pour XRP
-}
-
 
 // === Health Check ===
 app.get("/health", (req, res) => {
@@ -140,6 +134,7 @@ app.get("/health", (req, res) => {
 // === Webhook TradingView ===
 app.post("/webhook", async (req, res) => {
   console.log("🚀 Signal reçu :", req.body);
+
   let { symbol, side, type, quantity, price } = req.body;
 
   if (!symbol || !side || !type || !quantity) {
@@ -153,7 +148,6 @@ app.post("/webhook", async (req, res) => {
   try {
     let result;
 
-    // Détection close : SELL avec quantité > 1 → fermer tout au MARKET
     if (side === "SELL" && parseFloat(quantity) > 1) {
       result = await closeAllPositions(symbol);
     } else {
